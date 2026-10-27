@@ -1,0 +1,215 @@
+
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>台北 YouBike 即時監控</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      background: #f3f6f8;
+      color: #1f2937;
+    }
+    header {
+      background: #176b55;
+      color: white;
+      padding: 28px 20px;
+    }
+    header h1 { margin: 0 0 8px; font-size: 25px; }
+    header p { margin: 0; opacity: .9; }
+    main { max-width: 950px; margin: auto; padding: 20px; }
+    .panel {
+      background: white;
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 16px;
+      box-shadow: 0 2px 10px #00000008;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .stat {
+      background: #f0f8f4;
+      padding: 14px;
+      border-radius: 10px;
+    }
+    .stat strong { display: block; font-size: 25px; }
+    .stat span { font-size: 13px; color: #52615a; }
+    input {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #ccd5d1;
+      border-radius: 8px;
+      font-size: 16px;
+      margin-bottom: 12px;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      background: #176b55;
+      color: white;
+      padding: 11px 16px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    .muted { color: #64748b; font-size: 13px; }
+    .station {
+      padding: 15px 0;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .station:last-child { border-bottom: 0; }
+    .station h3 { margin: 0 0 6px; font-size: 17px; }
+    .numbers { display: flex; gap: 18px; flex-wrap: wrap; }
+    .error { color: #b42318; }
+    footer { text-align: center; padding: 24px; color: #64748b; font-size: 13px; }
+    @media (max-width: 500px) {
+      .stats { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🚲 台北 YouBike 即時監控</h1>
+    <p>台北市公共自行車站點即時資料展示</p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="stats">
+        <div class="stat">
+          <strong id="stations">—</strong>
+          <span>站點數</span>
+        </div>
+        <div class="stat">
+          <strong id="bikes">—</strong>
+          <span>可借車輛</span>
+        </div>
+        <div class="stat">
+          <strong id="spaces">—</strong>
+          <span>可還空位</span>
+        </div>
+      </div>
+      <p id="status" class="muted">正在載入即時資料…</p>
+      <p id="updated" class="muted">尚未更新</p>
+      <button id="refresh">立即更新</button>
+    </section>
+
+    <section class="panel">
+      <h2>搜尋站點</h2>
+      <input id="search" type="search"
+        placeholder="輸入站名、地址或站點代碼">
+      <div id="results" aria-live="polite">載入中…</div>
+      <button id="more" hidden>顯示更多站點</button>
+    </section>
+  </main>
+
+  <footer>
+    資料來源：臺北市 YouBike 公開即時資料 API。
+    資料可能有延遲，實際情況以官方資訊為準。
+  </footer>
+
+  <script>
+    const API =
+      "https://tcgbusfs.blob.core.windows.net/dotapp/youbike/v2/youbike_immediate.json";
+
+    const $ = id => document.getElementById(id);
+    let stations = [];
+    let lastUpdated = null;
+    let visibleCount = 30;
+    let loading = false;
+
+    function number(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    function safeText(value) {
+      return String(value ?? "").replace(/[&<>"']/g, char => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;",
+        '"': "&quot;", "'": "&#39;"
+      })[char]);
+    }
+
+    function render() {
+      const query = $("search").value.trim().toLowerCase();
+
+      const filtered = stations.filter(s =>
+        [s.sna, s.snaen, s.ar, s.sno]
+          .some(v => String(v ?? "").toLowerCase().includes(query))
+      );
+
+      $("results").innerHTML = filtered.length
+        ? filtered.slice(0, visibleCount).map(s => `
+          <article class="station">
+            <h3>${safeText(s.sna)}</h3>
+            <p class="muted">${safeText(s.ar || "地址未提供")}
+              · 站點代碼 ${safeText(s.sno)}</p>
+            <div class="numbers">
+              <span>🚲 可借：<b>${number(s.sbi)}</b></span>
+              <span>🅿️ 可還：<b>${number(s.bemp)}</b></span>
+              <span>總車位：<b>${number(s.tot)}</b></span>
+            </div>
+          </article>
+        `).join("")
+        : "<p>找不到符合的站點。</p>";
+
+      $("more").hidden = filtered.length <= visibleCount;
+      $("more").textContent = `顯示更多站點（共 ${filtered.length} 站）`;
+    }
+
+    async function refresh() {
+      if (loading) return;
+      loading = true;
+      $("status").textContent = "正在更新資料…";
+
+      try {
+        const response = await fetch(API, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const data = await response.json();
+        if (!Array.isArray(data) || data.length === 0) {
+          throw new Error("API 回傳資料格式不正確");
+        }
+
+        stations = data;
+        lastUpdated = new Date();
+        $("stations").textContent = stations.length.toLocaleString();
+        $("bikes").textContent = stations.reduce(
+          (sum, s) => sum + number(s.sbi), 0
+        ).toLocaleString();
+        $("spaces").textContent = stations.reduce(
+          (sum, s) => sum + number(s.bemp), 0
+        ).toLocaleString();
+
+        $("status").textContent = "連線成功，資料已更新";
+        $("status").className = "muted";
+        $("updated").textContent =
+          "本頁最近成功取得資料時間：" + lastUpdated.toLocaleString();
+        render();
+      } catch (error) {
+        $("status").textContent =
+          "更新失敗：" + error.message +
+          "。請稍後再試，或檢查資料來源連線。";
+        $("status").className = "error";
+      } finally {
+        loading = false;
+      }
+    }
+
+    $("search").addEventListener("input", render);
+    $("refresh").addEventListener("click", refresh);
+    $("more").addEventListener("click", () => {
+      visibleCount += 30;
+      render();
+    });
+
+    refresh();
+    setInterval(refresh, 60_000);
+  </script>
+</body>
+</html>
